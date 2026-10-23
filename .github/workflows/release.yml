@@ -1,0 +1,29 @@
+name: release
+# Publishes to npm when a tag like v0.1.0 is pushed.
+# Preferred: npm trusted publishing (OIDC, no stored token). Configure it on npmjs.com:
+#   package > Settings > Trusted publishing > GitHub Actions, repository harden-vps, workflow release.yml.
+# A package that does not exist yet cannot have a trusted publisher, so the very first publish uses the
+# NPM_TOKEN repository secret if present. Delete that secret once trusted publishing is configured.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Tag matches package.json version
+        run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
+      - name: Tests
+        run: bash test/run.sh
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

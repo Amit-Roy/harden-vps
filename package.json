@@ -3,9 +3,26 @@
   "version": "0.1.0",
   "description": "One-command Linux VPS security hardening for Debian: nftables firewall (Docker-safe), key-only SSH, fail2ban, Falco, ClamAV, Trivy, Tailscale, unattended-upgrades and supply-chain malware checks.",
   "keywords": [
-    "vps", "hardening", "security", "linux", "debian", "server-hardening", "nftables", "firewall",
-    "docker-firewall", "fail2ban", "falco", "clamav", "trivy", "tailscale", "ssh-hardening",
-    "unattended-upgrades", "supply-chain-security", "malware-detection", "canarytokens", "devsecops"
+    "vps",
+    "hardening",
+    "security",
+    "linux",
+    "debian",
+    "server-hardening",
+    "nftables",
+    "firewall",
+    "docker-firewall",
+    "fail2ban",
+    "falco",
+    "clamav",
+    "trivy",
+    "tailscale",
+    "ssh-hardening",
+    "unattended-upgrades",
+    "supply-chain-security",
+    "malware-detection",
+    "canarytokens",
+    "devsecops"
   ],
   "license": "MIT",
   "bin": {
@@ -29,5 +46,16 @@
   "scripts": {
     "test": "bash test/run.sh"
   },
-  "os": ["linux", "darwin"]
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Amit-Roy/harden-vps.git"
+  },
+  "homepage": "https://github.com/Amit-Roy/harden-vps#readme",
+  "bugs": {
+    "url": "https://github.com/Amit-Roy/harden-vps/issues"
+  }
 }
