@@ -1,7 +1,7 @@
 name: release
 # Pushing a tag like v0.1.1 stages a release on npm through trusted publishing (OIDC, no stored token).
 # A staged release goes live only after the owner approves it on npmjs.com with 2FA, so a compromised
-# workflow alone cannot publish. Trusted publisher: owner Amit-Roy, repository harden-vps, workflow release.yml.
+# workflow alone cannot publish. Configure the trusted publisher on npmjs.com with this repository and workflow release.yml.
 on:
   push:
     tags: ["v*"]
