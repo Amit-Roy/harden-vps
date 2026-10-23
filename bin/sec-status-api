@@ -1,0 +1,160 @@
+#!/usr/bin/python3
+"""SSH forced command: read-only status of the host's security automations.
+
+Accepts exactly one word, `status`, and prints JSON. No arguments reach a shell. Units come from
+/etc/sec-status/units.json (root-owned). Install behind a key with: restrict,command="/usr/local/sbin/sec-status-api"
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+CONFIG = os.environ.get("SEC_STATUS_CONFIG", "/etc/sec-status/units.json")
+
+
+def run(cmd, timeout=15):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        return p.returncode, p.stdout
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 124, f"{type(e).__name__}"
+
+
+UNITS = {"d": 86400, "h": 3600, "min": 60, "s": 1, "ms": 1e-3, "us": 1e-6}
+
+
+def timespan(text):
+    parts = re.findall(r"([0-9.]+)(us|ms|min|d|h|s)", text)
+    return sum(float(n) * UNITS[u] for n, u in parts) if parts else None
+
+
+def show(unit):
+    """systemctl show for one unit as a dict; timestamps as epoch milliseconds."""
+    _, out = run(
+        [
+            "systemctl", "show", "--timestamp=unix", unit,
+            "-p", "ActiveState,SubState,Result,ExecMainExitTimestamp,NextElapseUSecRealtime,NextElapseUSecMonotonic",
+        ]
+    )
+    d = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+    def ms(key):
+        v = d.get(key, "")
+        if not v or v == "n/a":
+            return None
+        if not v.startswith("@"):  # NextElapseUSecRealtime ignores --timestamp=unix
+            code, out = run(["date", "-d", v, "+@%s"])
+            v = out.strip() if code == 0 else ""
+        m = re.fullmatch(r"@(\d+)", v)
+        return int(m.group(1)) * 1000 if m else None
+
+    nxt = ms("NextElapseUSecRealtime")
+    mono = d.get("NextElapseUSecMonotonic", "")
+    if nxt is None and mono:  # OnUnitActiveSec / OnBootSec timers: a timespan since boot, e.g. "16h 41min 28.45s"
+        secs = timespan(mono)
+        if secs:
+            nxt = int((time.time() + secs - time.monotonic()) * 1000)
+    return {
+        "active": d.get("ActiveState", "unknown"),
+        "sub": d.get("SubState", ""),
+        "result": d.get("Result", ""),
+        "lastRun": ms("ExecMainExitTimestamp"),
+        "next": nxt,
+    }
+
+
+def file_state(spec, now):
+    """Fail while a non-empty file stays older than maxAgeSec (a queue that nobody flushes)."""
+    try:
+        st = os.stat(spec["path"])
+    except OSError:
+        return True, None
+    age = now - st.st_mtime
+    if st.st_size > 0 and age > spec["maxAgeSec"]:
+        return False, f"{spec['path'].rsplit('/', 1)[-1]} not flushed for {int(age // 60)} min"
+    return True, None
+
+
+def status_file(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return bool(d.get("ok")), "; ".join(d.get("reasons") or []) or None, d.get("at")
+    except (OSError, ValueError):
+        return None, None, None
+
+
+def main():
+    if os.environ.get("SSH_ORIGINAL_COMMAND", "status").strip() not in ("status", ""):
+        print('{"error":"usage: status"}')
+        return 2
+    cfg = json.load(open(CONFIG))
+    now = time.time()
+    checks = {}
+    for name, c in cfg.get("checks", {}).items():
+        code, out = run(c["cmd"], c.get("timeout", 25))
+        try:
+            checks[name] = json.loads(out)
+        except ValueError:
+            checks[name] = {"ok": code == 0, "missing": [out.strip()[:200]] if code else [], "error": True}
+    units = []
+    for u in cfg["units"]:
+        timer = show(u["timer"]) if u.get("timer") else None
+        svc = show(u["service"]) if u.get("service") else None
+        ok, problems = True, []
+        if svc:
+            if svc["active"] == "failed" or (svc["result"] not in ("success", "") and svc["active"] != "activating"):
+                ok, problems = False, problems + [f"service result {svc['result'] or svc['active']}"]
+            if u.get("continuous") and not timer and svc["active"] != "active":
+                ok, problems = False, problems + [f"service {svc['active']}"]
+        if timer and timer["active"] != "active":
+            ok, problems = False, problems + [f"timer {timer['active']}"]
+        for unit in u.get("alsoActive", []):
+            state = show(unit)["active"]
+            if state != "active":
+                ok, problems = False, problems + [f"{unit} {state}"]
+        if u.get("file"):
+            fok, why = file_state(u["file"], now)
+            if not fok:
+                ok, problems = False, problems + [why]
+        last = svc["lastRun"] if svc else None
+        if u.get("statusFile"):
+            hok, why, at = status_file(u["statusFile"])
+            if hok is False:
+                ok, problems = False, problems + [why or "last run failed"]
+            if at:
+                last = int(at) * 1000
+        chk = checks.get(u.get("check", ""))
+        if chk is not None:
+            missing = [m for m in chk.get("missing", []) if re.search(u.get("missingMatch", "."), m)]
+            if missing:
+                ok, problems = False, problems + missing
+            if u.get("lastRunKey") and chk.get(u["lastRunKey"]):
+                last = int(chk[u["lastRunKey"]]) * 1000
+        nxt = timer["next"] if timer else None
+        if nxt is None and u.get("nextAfterLast") and last:
+            nxt = last + u["periodSec"] * 1000
+        units.append(
+            {
+                "id": u["id"],
+                "name": u["name"],
+                "link": u["link"],
+                "schedule": u["schedule"],
+                "periodSec": u["periodSec"],
+                "runnable": u.get("runnable"),
+                "continuous": bool(u.get("continuous")),
+                "active": (timer or svc or {}).get("active", "unknown"),
+                "running": bool(svc and svc["active"] == "activating"),
+                "ok": ok,
+                "detail": "; ".join(problems) or None,
+                "lastRun": last,
+                "next": nxt,
+            }
+        )
+    print(json.dumps({"generatedAt": int(now * 1000), "units": units}, separators=(",", ":")))
+    return 0
+
+
+sys.exit(main())

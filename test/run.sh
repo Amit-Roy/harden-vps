@@ -10,13 +10,13 @@ fail() { fails=$((fails+1)); echo "FAIL $*"; }
 check() { local d=$1; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else fail "$d"; fi; }
 expect_fail() { local d=$1; shift; if "$@" >/dev/null 2>&1; then fail "$d (should have failed)"; else ok "$d"; fi; }
 
-ALL=ssh,fail2ban,unattended,sysctl,tailscale,trivy,falco,alerts,secscan,osv,firewall
+ALL=ssh,fail2ban,unattended,sysctl,tailscale,trivy,falco,alerts,secscan,osv,firewall,secstatus
 R="$T/root"; mkdir -p "$R/root/.ssh"; echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest test" > "$R/root/.ssh/authorized_keys"
 inst() { ./install.sh --root "$R" "$@"; }
 
 # 1. syntax + shellcheck
 for f in install.sh workstation.sh lib/*.sh bin/* test/run.sh; do
-  case $f in *.js) continue ;; esac
+  case $f in *.js|bin/sec-status-api) continue ;; esac
   check "bash -n $f" bash -n "$f"
 done
 sc=""
@@ -36,7 +36,7 @@ for f in etc/ssh/sshd_config.d/00-vps-harden.conf etc/fail2ban/jail.d/vps-harden
   etc/sysctl.d/90-vps-harden.conf etc/vps-harden/host_guard.nft etc/systemd/system/vps-harden-firewall.service \
   etc/falco/config.d/95-no-webserver.yaml etc/falco/falco_rules.local.yaml etc/clamav/clamd-secscan.conf \
   etc/apparmor.d/local/usr.sbin.clamd etc/systemd/system/secscan.timer etc/systemd/system/osv-malware-check.timer \
-  usr/local/sbin/vps-harden-notify usr/local/sbin/secscan usr/local/sbin/secscan-api usr/local/sbin/osv-malware-check \
+  usr/local/sbin/vps-harden-notify usr/local/sbin/secscan usr/local/sbin/secscan-api usr/local/sbin/osv-malware-check usr/local/sbin/sec-status-api etc/sec-status/units.json \
   usr/local/lib/vps-harden/common.sh etc/vps-harden/config.env; do
   check "exists $f" test -s "$R/$f"
 done
@@ -52,6 +52,9 @@ check "firewall: ssh closed by default" bash -c "! grep -q 'dport {[^}]*22' '$R/
 check "firewall: tailscale udp 41641 open" grep -q '41641' "$R/etc/vps-harden/host_guard.nft"
 check "firewall: forward chain drops" bash -c "sed -n '/chain forward/,\$p' '$R/etc/vps-harden/host_guard.nft' | grep -q 'counter drop'"
 check "systemd units verify (if available)" bash -c "! command -v systemd-analyze >/dev/null || true"
+
+check "sec-status-api py_compile" python3 -I -X pycache_prefix="$T/pyc" -m py_compile bin/sec-status-api
+check "sec-status units.json valid" python3 -I -c "import json,sys;json.load(open(sys.argv[1]))" "$R/etc/sec-status/units.json"
 
 # 3. idempotent: second run rewrites nothing
 out=$(inst --modules "$ALL" 2>&1)
