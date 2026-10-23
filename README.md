@@ -1,4 +1,4 @@
-# vps-harden: one-command Linux VPS security hardening (Debian/Ubuntu): firewall, Falco, ClamAV, Trivy, fail2ban, Tailscale, supply-chain malware checks
+# harden-vps: one-command Linux VPS security hardening (Debian/Ubuntu): firewall, Falco, ClamAV, Trivy, fail2ban, Tailscale, supply-chain malware checks
 
 Idempotent installer that turns a fresh Debian VPS into a hardened server: default-deny nftables firewall that also closes the
 Docker published-port bypass, key-only SSH, fail2ban, unattended security upgrades, Falco runtime detection, weekly
