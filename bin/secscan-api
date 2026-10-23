@@ -11,7 +11,7 @@ case "$cmd" in
     if [ ${#f[@]} -eq 0 ]; then echo '[]'; else jq -s -c 'sort_by(.id)|reverse|[.[]|{id,startedAt,finishedAt,trigger,status,counts:{
       infected:(.tools.clamav.infected//[]|length), runtimeAlerts:(.tools.falco.alerts//[]|length),
       critical:([.tools.trivy.targets[]?.counts.CRITICAL]|add//0), high:([.tools.trivy.targets[]?.counts.HIGH]|add//0),
-      openPorts:(.tools.nmap.openPorts//[]|length)}}]' "${f[@]}"; fi ;;
+      openPorts:(.tools.nmap.openPorts//[]|map(select(.exposed!=false))|length)}}]' "${f[@]}"; fi ;;
   get) [[ "${arg:-}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] && [ -f "$DIR/results/$arg.json" ] && cat "$DIR/results/$arg.json" || { echo '{"error":"not found"}'; exit 1; } ;;
   log)
     # log <id> [after]: lines after line number <after> (0 = all, capped to the last 500).

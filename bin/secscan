@@ -83,10 +83,20 @@ jq -s --arg v "$(trivy --version | awk 'NR==1{print $2}')" --argjson d "$(dur)" 
 step nmap
 if [ -z "$PUBLIC_IP" ]; then jq -n '{status:"skipped",error:"no public IP detected"}' > "$W/nmap.json"
 elif timeout 30m $NICE nmap -v -Pn -sV --top-ports 1000 --stats-every 60s -oG "$W/nm.txt" "$PUBLIC_IP" > >(grep --line-buffered -E "Discovered|Stats|Timing|Completed|Initiating|Nmap done" | logpipe nmap) 2>"$W/nm.err"; then
-  jq -n --rawfile out "$W/nm.txt" --arg v "$(nmap --version | awk 'NR==1{print $3}')" --argjson d "$(dur)" --arg t "$PUBLIC_IP" '
+  # Host-to-self scans skip the public firewall; mark ports that host_guard accepts from the internet.
+  EXPOSED=$(nft -j list table inet host_guard 2>/dev/null | jq -c '
+    [.nftables[]?.rule? | select(.chain=="input") | select(any(.expr[]; has("accept")))
+     | select(all(.expr[]; has("accept") or has("counter") or (.match.left.payload.field? == "dport" and .match.op=="==")))
+     | (.expr | map(select(.match) | .match) | .[0]) as $m | select($m != null)
+     | $m.left.payload.protocol as $pr | ($m.right | if type=="object" then (.set // [.]) else [.] end)[]
+     | {proto:$pr, lo:(if type=="object" then .range[0] else . end), hi:(if type=="object" then .range[1] else . end)}]') || EXPOSED=""
+  [ -n "$EXPOSED" ] || EXPOSED=null
+  jq -n --rawfile out "$W/nm.txt" --argjson ex "$EXPOSED" --arg v "$(nmap --version | awk 'NR==1{print $3}')" --argjson d "$(dur)" --arg t "$PUBLIC_IP" '
     [($out|split("\n"))[]|select(test("Ports: "))|capture("Ports: (?<p>[^\t]*)").p|split(", ")[]|split("/")
-     |select(.[1]=="open")|{port:(.[0]|tonumber),proto:.[2],service:.[4],product:.[6]}] as $p |
-    {status:"clean", version:$v, durationSec:$d, target:$t, openPorts:$p, error:null}' > "$W/nmap.json"
+     |select(.[1]=="open")|{port:(.[0]|tonumber),proto:.[2],service:.[4],product:.[6]}
+     |if $ex==null then . else . as $o | .exposed=any($ex[]; .proto==$o.proto and .lo<=$o.port and $o.port<=.hi) end] as $p |
+    {status:"clean", version:$v, durationSec:$d, target:$t, openPorts:$p, error:null}
+    + (if $ex==null then {} else {exposedPorts:([$p[]|select(.exposed)]|length), vantage:"host + firewall rules"} end)' > "$W/nmap.json"
 else err "nmap: $(tail -c 300 "$W/nm.err")" > "$W/nmap.json"; fi
 
 jq -n --arg id "$ID" --arg s "$STARTED" --arg f "$(date -u +%FT%TZ)" --arg tr "$TRIGGER" \
