@@ -1,0 +1,13 @@
+[Unit]
+Description=vps-harden default-deny firewall for the public interface
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/vps-harden/host_guard.nft
+ExecStop=/usr/sbin/nft delete table inet host_guard
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Queue Falco Warning+ events for alerting
+After=falco-modern-bpf.service
+
+[Service]
+ExecStartPre=/usr/bin/mkdir -p /var/lib/falco-alert
+ExecStart=/usr/local/sbin/falco-alert
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

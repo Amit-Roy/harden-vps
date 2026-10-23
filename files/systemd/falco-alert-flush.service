@@ -1,0 +1,6 @@
+[Unit]
+Description=Send queued Falco events
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/falco-alert-flush

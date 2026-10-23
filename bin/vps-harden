@@ -1,0 +1,19 @@
+#!/bin/bash
+# vps-harden helper CLI: confirm-firewall | firewall-status | test-alert
+set -euo pipefail
+ROLLBACK_UNIT=vps-harden-fw-rollback
+case "${1:-}" in
+  confirm-firewall)
+    # Run this from a NEW ssh session: it cancels the pending rollback and keeps the firewall on boot.
+    systemctl stop "$ROLLBACK_UNIT.timer" 2>/dev/null || true
+    systemctl enable vps-harden-firewall.service
+    echo "firewall confirmed: rollback cancelled, enabled at boot" ;;
+  firewall-status)
+    systemctl is-active vps-harden-firewall.service || true
+    systemctl is-enabled vps-harden-firewall.service || true
+    systemctl list-timers "$ROLLBACK_UNIT.timer" --no-pager 2>/dev/null | sed -n '1,3p'
+    nft list table inet host_guard 2>/dev/null || echo "table inet host_guard not loaded" ;;
+  test-alert)
+    echo "Test alert from $(hostname) at $(date -u +%FT%TZ)." | vps-harden-notify "test alert" ;;
+  *) echo "usage: vps-harden confirm-firewall | firewall-status | test-alert" >&2; exit 2 ;;
+esac

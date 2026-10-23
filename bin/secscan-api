@@ -1,0 +1,32 @@
+#!/bin/bash
+# SSH forced command for agents and dashboards: read scan results, start a scan.
+set -uo pipefail
+DIR=/var/lib/secscan
+running() { [[ "$(systemctl is-active secscan.service)" =~ ^(active|activating)$ ]]; }
+read -r cmd arg extra <<< "${SSH_ORIGINAL_COMMAND:-}"
+case "$cmd" in
+  latest) [ -f "$DIR/latest.json" ] && cat "$DIR/latest.json" || echo '{}' ;;
+  history)
+    shopt -s nullglob; f=("$DIR"/results/*.json); mapfile -t f < <(printf '%s\n' "${f[@]}" | sed '/^$/d' | sort -r | head -20)
+    if [ ${#f[@]} -eq 0 ]; then echo '[]'; else jq -s -c 'sort_by(.id)|reverse|[.[]|{id,startedAt,finishedAt,trigger,status,counts:{
+      infected:(.tools.clamav.infected//[]|length), runtimeAlerts:(.tools.falco.alerts//[]|length),
+      critical:([.tools.trivy.targets[]?.counts.CRITICAL]|add//0), high:([.tools.trivy.targets[]?.counts.HIGH]|add//0),
+      openPorts:(.tools.nmap.openPorts//[]|length)}}]' "${f[@]}"; fi ;;
+  get) [[ "${arg:-}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] && [ -f "$DIR/results/$arg.json" ] && cat "$DIR/results/$arg.json" || { echo '{"error":"not found"}'; exit 1; } ;;
+  log)
+    # log <id> [after]: lines after line number <after> (0 = all, capped to the last 500).
+    [[ "${arg:-}" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] && [ -f "$DIR/logs/$arg.log" ] || { echo '{"error":"not found"}'; exit 1; }
+    after=${extra:-0}; [[ "$after" =~ ^[0-9]+$ ]] || after=0
+    total=$(wc -l < "$DIR/logs/$arg.log")
+    from=$(( after > total - 500 ? after : (total > 500 ? total - 500 : 0) ))
+    run=false; running && [ "$(jq -r '.id // empty' /run/secscan.status 2>/dev/null)" = "$arg" ] && run=true
+    tail -n +$((from + 1)) "$DIR/logs/$arg.log" | jq -R . | jq -s -c --arg id "$arg" --argjson total "$total" --argjson from "$from" --argjson run "$run" \
+      '{id:$id, running:$run, from:$from, total:$total, lines:.}' ;;
+  status)
+    if running; then cat /run/secscan.status 2>/dev/null || echo '{"running":true,"id":null,"startedAt":null,"currentTool":null}'
+    else echo '{"running":false,"id":null,"startedAt":null,"currentTool":null}'; fi ;;
+  run)
+    if running; then echo '{"started":false,"reason":"already running"}'
+    else touch /run/secscan.trigger; systemctl start --no-block secscan.service && echo '{"started":true}'; fi ;;
+  *) echo '{"error":"usage: latest|history|get <id>|log <id> [after]|status|run"}'; exit 2 ;;
+esac

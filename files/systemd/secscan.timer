@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly host security scan
+
+[Timer]
+OnCalendar=@SECSCAN_CALENDAR@
+Persistent=true
+RandomizedDelaySec=5m
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,5 @@
+# secscan: scan-only clamd config and socket (managed by vps-harden)
+/etc/clamav/clamd-secscan.conf r,
+/run/secscan-clamd.sock rw,
+# secscan scans the host read-only
+/** r,

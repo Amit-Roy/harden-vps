@@ -1,0 +1,102 @@
+#!/bin/bash
+# Weekly host security scan: ClamAV, Falco, Trivy, nmap. Writes JSON to /var/lib/secscan/results.
+set -uo pipefail
+# shellcheck source=vps-harden-common.sh
+. "${VPS_HARDEN_LIB:-/usr/local/lib/vps-harden/common.sh}"
+vh_load_config
+DIR=/var/lib/secscan; RES=$DIR/results; STATUS=/run/secscan.status
+PUBLIC_IP=$(vh_public_ip)
+FALCO_UNIT=${FALCO_UNIT:-falco-modern-bpf.service}
+mkdir -p "$RES" "$DIR/logs"; W=$(mktemp -d); trap 'rm -rf "$W"; rm -f "$STATUS"; kill ${TICK:-} ${CLAMD:-} 2>/dev/null' EXIT
+TRIGGER=timer; [ -f /run/secscan.trigger ] && TRIGGER=manual && rm -f /run/secscan.trigger
+ID=$(date -u +%Y%m%dT%H%M%SZ); STARTED=$(date -u +%FT%TZ)
+NICE="nice -n 19 ionice -c3"
+LOG=$DIR/logs/$ID.log
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >> "$LOG"; }
+# Prefix each line from a tool's stderr/stdout and append it to the scan log.
+logpipe() { sed -u "s/^/$(printf '%s' "$1"): /" | while IFS= read -r l; do log "$l"; done; }
+step() {
+  [ -n "${CUR:-}" ] && log "$CUR: finished in $(dur) s"
+  CUR=$1; T0=$(date +%s); [ "$1" = "done" ] && return
+  jq -n --arg s "$STARTED" --arg t "$1" --arg id "$ID" '{running:true,id:$id,startedAt:$s,currentTool:$t}' > "$STATUS"; log "$1: started"
+}
+dur() { echo $(( $(date +%s) - T0 )); }
+err() { jq -n --arg e "$1" --argjson d "$(dur)" '{status:"error",durationSec:$d,error:$e}'; }
+
+# ClamAV: temporary multithreaded clamd (config /etc/clamav/clamd-secscan.conf), killed after the scan
+step clamav
+CONF=/etc/clamav/clamd-secscan.conf; SOCK=/run/secscan-clamd.sock
+paths=(); for p in ${SCAN_PATHS:-/root /home /etc /opt /usr/local /srv /tmp /var/tmp}; do [ -e "$p" ] && paths+=("$p"); done
+rm -f "$SOCK"; log "clamav: loading signatures, paths: ${paths[*]}"; $NICE clamd -c "$CONF" & CLAMD=$!
+for _ in $(seq 120); do [ -S "$SOCK" ] && break; sleep 1; done
+log "clamav: signatures loaded, scanning multithreaded"
+# clamd reports only infected files, so log what its threads have open every 30 s as progress.
+( while sleep 30; do log "clamav: scanning $(find /proc/$CLAMD/fd -lname "/*" -printf "%l\n" 2>/dev/null | grep -v -e "^/dev/" -e "^/var/lib/clamav" -e "^/tmp/clamav" | head -3 | tr "\n" " ")"; done ) & TICK=$!
+timeout 2h clamdscan -c "$CONF" --multiscan --infected --no-summary "${paths[@]}" > "$W/clam.txt" 2>"$W/clam.err"; rc=$?
+kill "$TICK" "$CLAMD" 2>/dev/null; wait "$CLAMD" 2>/dev/null
+grep " FOUND$" "$W/clam.txt" | logpipe clamav
+if [ $rc -le 1 ]; then
+  jq -n --rawfile out "$W/clam.txt" --arg v "$(clamscan --version)" --argjson d "$(dur)" --args '
+    ($out|split("\n")) as $l |
+    {status:(if any($l[];endswith(" FOUND")) then "findings" else "clean" end),
+     version:($v|split("/")[0]), dbDate:($v|split("/")[2]//null), durationSec:$d, scannedFiles:null,
+     scannedPaths:$ARGS.positional,
+     infected:[$l[]|select(endswith(" FOUND"))|capture("^(?<path>.*): (?<signature>.*) FOUND$")], error:null}' "${paths[@]}" > "$W/clamav.json"
+elif [ $rc -eq 124 ]; then err "ClamAV did not finish within 2 hours" > "$W/clamav.json"
+else err "clamdscan exit $rc: $(grep -v ': OK$' "$W/clam.err" | tail -c 300)" > "$W/clamav.json"; fi
+
+# Falco: runtime alerts logged since the previous scan (max 7 days)
+step falco
+SINCE=$(jq -r '.startedAt // empty' "$DIR/latest.json" 2>/dev/null); [ -z "$SINCE" ] && SINCE=$(date -u -d '-7 days' +%FT%TZ)
+if systemctl is-active -q "$FALCO_UNIT"; then
+  journalctl -u "$FALCO_UNIT" --since "$(date -d "$SINCE" '+%F %T')" -o cat --no-pager | grep '^{' > "$W/falco.jsonl"
+  jq -s --arg v "$(falco --version 2>/dev/null | awk '/Falco version/{print $3}')" --argjson d "$(dur)" --arg since "$SINCE" '
+    [.[]|select(.priority|IN("Emergency","Alert","Critical","Error","Warning"))] as $a |
+    {status:(if ($a|length)>0 then "findings" else "clean" end), version:$v, durationSec:$d, since:$since,
+     counts:(reduce .[] as $e ({}; .[$e.priority]+=1)),
+     alerts:([$a[]|{time,priority,rule,container:(.output_fields["container.name"]//"host"),output}]|reverse|.[:100]), error:null}' "$W/falco.jsonl" > "$W/falco.json"
+else err "$FALCO_UNIT not running" > "$W/falco.json"; fi
+
+# Trivy
+step trivy
+TV="timeout 90m $NICE trivy --scanners vuln --timeout 30m"; : > "$W/tt.jsonl"; terr=""
+summ() { jq -c --arg n "$1" --arg t "$2" '
+  [.Results[]?.Vulnerabilities[]?] as $v |
+  {name:$n, type:$t, counts:(reduce ("CRITICAL","HIGH","MEDIUM","LOW") as $s ({}; .[$s]=([$v[]|select(.Severity==$s)]|length))),
+   vulns:([$v[]|select(.Severity=="CRITICAL" or .Severity=="HIGH")|{id:.VulnerabilityID,pkg:.PkgName,installed:.InstalledVersion,fixed:(.FixedVersion//null),severity:.Severity,title:(.Title//"")}]|unique_by(.id+.pkg)|sort_by(.severity)|.[:50])}' "$3"; }
+log "trivy: updating vulnerability database"
+for img in $(command -v docker >/dev/null && docker ps -a --format '{{.Image}}' 2>/dev/null | sort -u); do
+  $TV image -f json -o "$W/t.json" "$img" 2> >(tee -a "$W/trivy.err" | logpipe trivy) && summ "$img" image "$W/t.json" >> "$W/tt.jsonl" || terr+="image $img failed; "
+done
+$TV rootfs -f json -o "$W/t.json" --pkg-types os --skip-dirs /var/lib/docker --skip-dirs /proc --skip-dirs /sys / 2> >(tee -a "$W/trivy.err" | logpipe trivy) \
+  && summ "host /" rootfs "$W/t.json" >> "$W/tt.jsonl" || terr+="rootfs failed; "
+for fsdir in ${TRIVY_FS_PATHS:-}; do
+  [ -d "$fsdir" ] || continue
+  $TV fs -f json -o "$W/t.json" --skip-dirs '**/node_modules' --skip-dirs '**/.venv' "$fsdir" 2> >(tee -a "$W/trivy.err" | logpipe trivy) \
+    && summ "$fsdir" repo "$W/t.json" >> "$W/tt.jsonl" || terr+="$fsdir failed; "
+done
+jq -s --arg v "$(trivy --version | awk 'NR==1{print $2}')" --argjson d "$(dur)" --arg e "$terr" '
+  {status:(if $e!="" and length==0 then "error" elif any(.[];.counts.CRITICAL+.counts.HIGH>0) then "findings" else "clean" end),
+   version:$v, durationSec:$d, targets:., error:(if $e=="" then null else $e end)}' "$W/tt.jsonl" > "$W/trivy.json"
+
+# nmap
+step nmap
+if [ -z "$PUBLIC_IP" ]; then jq -n '{status:"skipped",error:"no public IP detected"}' > "$W/nmap.json"
+elif timeout 30m $NICE nmap -v -Pn -sV --top-ports 1000 --stats-every 60s -oG "$W/nm.txt" "$PUBLIC_IP" > >(grep --line-buffered -E "Discovered|Stats|Timing|Completed|Initiating|Nmap done" | logpipe nmap) 2>"$W/nm.err"; then
+  jq -n --rawfile out "$W/nm.txt" --arg v "$(nmap --version | awk 'NR==1{print $3}')" --argjson d "$(dur)" --arg t "$PUBLIC_IP" '
+    [($out|split("\n"))[]|select(test("Ports: "))|capture("Ports: (?<p>[^\t]*)").p|split(", ")[]|split("/")
+     |select(.[1]=="open")|{port:(.[0]|tonumber),proto:.[2],service:.[4],product:.[6]}] as $p |
+    {status:"clean", version:$v, durationSec:$d, target:$t, openPorts:$p, error:null}' > "$W/nmap.json"
+else err "nmap: $(tail -c 300 "$W/nm.err")" > "$W/nmap.json"; fi
+
+jq -n --arg id "$ID" --arg s "$STARTED" --arg f "$(date -u +%FT%TZ)" --arg tr "$TRIGGER" \
+  --slurpfile c "$W/clamav.json" --slurpfile r "$W/falco.json" --slurpfile t "$W/trivy.json" --slurpfile n "$W/nmap.json" '
+  {clamav:$c[0],falco:$r[0],trivy:$t[0],nmap:$n[0]} as $tools |
+  {id:$id,startedAt:$s,finishedAt:$f,trigger:$tr,
+   status:(if any($tools[];.status=="findings") then "findings" elif any($tools[];.status=="error") then "error" else "clean" end),
+   tools:$tools}' > "$RES/$ID.json.tmp" && mv "$RES/$ID.json.tmp" "$RES/$ID.json"
+step "done"; log "scan: finished, status $(jq -r .status "$RES/$ID.json")"
+ln -sfn "$RES/$ID.json" "$DIR/latest.json"
+ls -1t "$RES"/*.json | tail -n +21 | xargs -r rm -f
+ls -1t "$DIR"/logs/*.log | tail -n +21 | xargs -r rm -f
+jq -r '"secscan \(.id) \(.status): clamav=\(.tools.clamav.status) falco=\(.tools.falco.status) trivy=\(.tools.trivy.status) nmap=\(.tools.nmap.status)"' "$DIR/latest.json"

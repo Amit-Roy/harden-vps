@@ -1,0 +1,14 @@
+# Managed by vps-harden.
+[DEFAULT]
+banaction = nftables
+banaction_allports = nftables[type=allports]
+
+[sshd]
+enabled = true
+backend = systemd
+port = @SSH_PORT@
+maxretry = 5
+findtime = 10m
+bantime = 1h
+bantime.increment = true
+bantime.maxtime = 1w

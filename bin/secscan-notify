@@ -1,0 +1,18 @@
+#!/bin/bash
+# Send a one-screen summary of the scan secscan just finished (ExecStopPost hook).
+set -euo pipefail
+f=/var/lib/secscan/latest.json
+[ -f "$f" ] || exit 0
+jq -r '
+  def n(x): (x // [] | length);
+  "Scan \(.id) finished \(.finishedAt // "?") with status \(.status).",
+  "",
+  "ClamAV  \(.tools.clamav.status): \(n(.tools.clamav.infected)) infected file(s)",
+  (.tools.clamav.infected // [] | .[:10][] | "  - \(.path): \(.signature)"),
+  "Falco   \(.tools.falco.status): \(n(.tools.falco.alerts)) runtime alert(s) since the previous scan",
+  "Trivy   \(.tools.trivy.status): \([.tools.trivy.targets[]?.counts.CRITICAL] | add // 0) critical, \([.tools.trivy.targets[]?.counts.HIGH] | add // 0) high",
+  (.tools.trivy.targets[]? | select(.counts.CRITICAL + .counts.HIGH > 0) | "  - \(.name): \(.counts.CRITICAL) critical, \(.counts.HIGH) high"),
+  "Nmap    \(.tools.nmap.status): open ports \(.tools.nmap.openPorts // [] | map("\(.port)/\(.service)") | join(", "))",
+  "",
+  "Full JSON: /var/lib/secscan/latest.json"' "$f" \
+  | vps-harden-notify "weekly scan: $(jq -r .status "$f")"

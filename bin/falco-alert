@@ -1,0 +1,9 @@
+#!/bin/bash
+# Queue Falco events of priority Warning or higher for falco-alert-flush.
+set -euo pipefail
+# shellcheck source=vps-harden-common.sh
+. "${VPS_HARDEN_LIB:-/usr/local/lib/vps-harden/common.sh}"
+vh_load_config
+exec journalctl -u "${FALCO_UNIT:-falco-modern-bpf.service}" -f -n0 -o cat \
+  | jq --unbuffered -cR 'fromjson? | select(.priority | IN("Emergency","Alert","Critical","Error","Warning"))' \
+  >> /var/lib/falco-alert/queue

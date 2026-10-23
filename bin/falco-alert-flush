@@ -1,0 +1,21 @@
+#!/bin/bash
+# Send queued Falco events as one digest (runs every 5 minutes), then clear the queue.
+set -euo pipefail
+dir=/var/lib/falco-alert
+[ -s "$dir/queue" ] || exit 0
+mv "$dir/queue" "$dir/sending" && : > "$dir/queue"
+n=$(wc -l < "$dir/sending")
+top=$(jq -r .priority "$dir/sending" | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+body=$( {
+  echo "Falco raised $n event(s) on $(hostname) (UTC times)."
+  echo
+  echo "By rule:"
+  jq -r '.priority + "  " + .rule' "$dir/sending" | sort | uniq -c | sort -rn
+  echo
+  echo "First 20 events:"
+  head -20 "$dir/sending" | jq -r '"- " + .output'
+  echo
+  echo "Full events: journalctl -u falco-modern-bpf --since -1h"
+} )
+printf '%s\n' "$body" | vps-harden-notify "$top: $n Falco event(s)"
+rm -f "$dir/sending"

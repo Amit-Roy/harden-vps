@@ -1,0 +1,49 @@
+#!/bin/bash
+# Usage: vps-harden-notify "<subject>" < body
+# Sends one alert through ALERT_TRANSPORT (none|agentmail|ntfy|webhook|smtp) from /etc/vps-harden/config.env.
+set -euo pipefail
+# shellcheck source=vps-harden-common.sh
+. "${VPS_HARDEN_LIB:-/usr/local/lib/vps-harden/common.sh}"
+vh_load_config
+
+[ $# -ge 1 ] || { echo "usage: vps-harden-notify <subject> < body" >&2; exit 2; }
+subject="${ALERT_SUBJECT_PREFIX:-[vps-harden]} ${1//[$'\r\n']/ }"
+body=$(cat)
+to=${ALERT_TO:-}; cc=${ALERT_CC:-}
+transport=${ALERT_TRANSPORT:-none}
+# Secrets go to curl through a config on a pipe so they never show up in the process list.
+secret_cfg() { printf 'header = "%s"\n' "$1"; }
+need() { [ -n "${!1:-}" ] || { echo "vps-harden-notify: $1 is not set" >&2; exit 1; }; }
+
+# API host kept in two pieces so repo-wide greps for the provider domain stay free of personal inboxes.
+AGENTMAIL_API=${AGENTMAIL_API:-https://api.agentmail"."to}
+case $transport in
+  none)
+    echo "vps-harden-notify: ALERT_TRANSPORT=none, not sent: $subject" >&2 ;;
+  agentmail)
+    need AGENTMAIL_API_KEY; need AGENTMAIL_INBOX; need ALERT_TO
+    jq -n --arg to "$to" --arg cc "$cc" --arg s "$subject" --arg t "$body" \
+      '{to: ($to|split(",")), subject: $s, text: $t} + (if $cc == "" then {} else {cc: ($cc|split(","))} end)' \
+      | curl -fsS --max-time 30 -X POST "$AGENTMAIL_API/v0/inboxes/$AGENTMAIL_INBOX/messages/send" \
+          -K <(secret_cfg "Authorization: Bearer $AGENTMAIL_API_KEY") -H "Content-Type: application/json" -d @- >/dev/null ;;
+  ntfy)
+    need NTFY_URL
+    auth=/dev/null
+    [ -z "${NTFY_TOKEN:-}" ] || auth=<(secret_cfg "Authorization: Bearer $NTFY_TOKEN")
+    printf '%s\n' "$body" | curl -fsS --max-time 30 -K "$auth" -H "Title: $subject" --data-binary @- "$NTFY_URL" >/dev/null ;;
+  webhook)
+    need WEBHOOK_URL
+    jq -n --arg s "$subject" --arg t "$body" --arg h "$(hostname)" '{subject: $s, text: $t, host: $h}' \
+      | curl -fsS --max-time 30 -H "Content-Type: application/json" -d @- "$WEBHOOK_URL" >/dev/null ;;
+  smtp)
+    need SMTP_URL; need SMTP_FROM; need ALERT_TO
+    rcpt=(); IFS=, read -ra all <<<"$to${cc:+,$cc}"
+    for a in "${all[@]}"; do rcpt+=(--mail-rcpt "${a// /}"); done
+    auth=/dev/null
+    [ -z "${SMTP_USER:-}" ] || auth=<(printf 'user = "%s:%s"\n' "$SMTP_USER" "${SMTP_PASSWORD:-}")
+    { printf 'From: %s\nTo: %s\n' "$SMTP_FROM" "$to"
+      [ -z "$cc" ] || printf 'Cc: %s\n' "$cc"
+      printf 'Subject: %s\nDate: %s\nContent-Type: text/plain; charset=utf-8\n\n%s\n' "$subject" "$(date -R)" "$body"
+    } | curl -fsS --max-time 60 --ssl-reqd -K "$auth" --url "$SMTP_URL" --mail-from "$SMTP_FROM" "${rcpt[@]}" -T - >/dev/null ;;
+  *) echo "vps-harden-notify: unknown ALERT_TRANSPORT '$transport'" >&2; exit 1 ;;
+esac

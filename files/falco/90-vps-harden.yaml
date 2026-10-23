@@ -1,0 +1,3 @@
+json_output: true
+json_include_output_property: true
+priority: notice

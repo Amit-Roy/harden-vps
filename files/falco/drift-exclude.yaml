@@ -1,0 +1,5 @@
+# Containers that install and run new binaries all day (dev workspaces): drift alerts there are expected.
+- rule: Drop and execute new binary in container
+  condition: and not (@PREFIX_CONDITION@)
+  override:
+    condition: append

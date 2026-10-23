@@ -1,0 +1,17 @@
+#!/bin/bash
+# Usage: vps-harden-portcheck <ipv4> <port>...
+# Checks from the outside (check-host.net, 3 nodes) whether TCP ports are reachable. IPv6 is unsupported there.
+# A host scanning its own public IP bypasses the firewall, so use this instead of nmap-from-self.
+set -euo pipefail
+ip=${1:?ipv4}; shift
+[ $# -gt 0 ] || { echo "usage: vps-harden-portcheck <ipv4> <port>..." >&2; exit 2; }
+for port in "$@"; do
+  id=$(curl -fsS -H 'Accept: application/json' "https://check-host.net/check-tcp?host=$ip:$port&max_nodes=3" | jq -r .request_id)
+  for _ in $(seq 12); do
+    sleep 5
+    res=$(curl -fsS -H 'Accept: application/json' "https://check-host.net/check-result/$id")
+    # Done when no node is still null.
+    [ "$(jq '[.[]|select(.==null)]|length' <<<"$res")" = 0 ] && break
+  done
+  jq -r --arg p "$port" 'to_entries[] | "\($p) \(.key): " + (if .value==null then "pending" elif (.value[0]|has("time")) then "OPEN" else "closed/filtered" end)' <<<"$res"
+done

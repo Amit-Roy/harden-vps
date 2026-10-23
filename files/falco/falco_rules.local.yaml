@@ -1,0 +1,12 @@
+# Managed by vps-harden.
+# The weekly ClamAV scan (clamd started by secscan) reads every file, including credentials.
+- rule: Read sensitive file untrusted
+  condition: and not (proc.name = "clamd" and proc.cmdline contains "clamd-secscan.conf")
+  override:
+    condition: append
+# Lynis rotates its own logs; dpkg triggers rewrite caches during upgrades.
+- rule: Clear Log Activities
+  condition: and not (proc.name = "lynis" or proc.pname startswith "dpkg" or proc.name endswith ".postinst")
+  override:
+    condition: append
+@EXTRA_RULES@

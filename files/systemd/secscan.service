@@ -1,0 +1,12 @@
+[Unit]
+Description=Host security scan (ClamAV, Falco, Trivy, nmap)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/secscan
+ExecStopPost=-/usr/local/sbin/secscan-notify
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=200%
+TimeoutStartSec=5h

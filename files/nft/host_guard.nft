@@ -1,0 +1,25 @@
+# Managed by vps-harden. Default-deny for the public interface only.
+# lo, tailscale0 and container bridges are trusted because only "@PUBLIC_IFACE@" is filtered.
+# Own table + own unit: Debian's nftables.service does "flush ruleset" and would wipe Docker/Tailscale rules.
+table inet host_guard
+delete table inet host_guard
+table inet host_guard {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    iifname != "@PUBLIC_IFACE@" accept
+    ct state established,related accept
+    ct state invalid drop
+    meta l4proto { icmp, ipv6-icmp } accept
+    udp sport 67 udp dport 68 accept
+    udp sport 547 udp dport 546 accept
+@INPUT_RULES@
+    counter drop
+  }
+  # Docker publishes ports via DNAT + FORWARD, which skips the input chain: block new public connections to containers too.
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+    iifname != "@PUBLIC_IFACE@" accept
+    ct state established,related accept
+    counter drop
+  }
+}

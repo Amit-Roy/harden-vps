@@ -1,0 +1,19 @@
+#!/bin/bash
+# Usage: vps-harden-safe-restart <compose-dir> <service> <health-url> [timeout-seconds]
+# Edit compose.yaml first. Applies it, waits for the health URL; if unhealthy, restores the previous
+# compose.yaml saved as compose.yaml.vps-harden-prev and recreates the service.
+set -uo pipefail
+dir=${1:?compose dir}; svc=${2:?service}; url=${3:?health url}; timeout=${4:-180}
+cd "$dir" || exit 1
+f=compose.yaml; [ -f "$f" ] || f=docker-compose.yml
+prev="$f.vps-harden-prev"
+[ -f "$prev" ] || { echo "save the previous file first: cp $f $prev" >&2; exit 2; }
+docker compose up -d "$svc"
+for _ in $(seq $((timeout / 5))); do
+  if curl -fsS --max-time 4 "$url" >/dev/null 2>&1; then echo healthy; exit 0; fi
+  sleep 5
+done
+echo "unhealthy after ${timeout}s, rolling back"
+cp "$prev" "$f"
+docker compose up -d "$svc"
+exit 1
