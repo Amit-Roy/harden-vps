@@ -1,9 +1,7 @@
 name: release
-# Publishes to npm when a tag like v0.1.0 is pushed.
-# Preferred: npm trusted publishing (OIDC, no stored token). Configure it on npmjs.com:
-#   package > Settings > Trusted publishing > GitHub Actions, repository harden-vps, workflow release.yml.
-# A package that does not exist yet cannot have a trusted publisher, so the very first publish uses the
-# NPM_TOKEN (or HARDEN_VPS_FIRST_PUBLISH) repository secret if present. Delete it once trusted publishing is configured.
+# Pushing a tag like v0.1.1 stages a release on npm through trusted publishing (OIDC, no stored token).
+# A staged release goes live only after the owner approves it on npmjs.com with 2FA, so a compromised
+# workflow alone cannot publish. Trusted publisher: owner Amit-Roy, repository harden-vps, workflow release.yml.
 on:
   push:
     tags: ["v*"]
@@ -23,7 +21,7 @@ jobs:
         run: test "v$(node -p "require('./package.json').version")" = "$GITHUB_REF_NAME"
       - name: Tests
         run: bash test/run.sh
-      - name: Publish
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.HARDEN_VPS_FIRST_PUBLISH }}
+      - name: npm with staged publishing
+        run: npm install -g npm@11.19.0
+      - name: Stage for approval
+        run: npm stage publish . --provenance --access public

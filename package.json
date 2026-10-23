@@ -1,6 +1,6 @@
 {
   "name": "harden-vps",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One-command Linux VPS security hardening for Debian: nftables firewall (Docker-safe), key-only SSH, fail2ban, Falco, ClamAV, Trivy, Tailscale, unattended-upgrades and supply-chain malware checks.",
   "keywords": [
     "vps",
