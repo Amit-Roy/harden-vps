@@ -3,7 +3,7 @@ name: release
 # Preferred: npm trusted publishing (OIDC, no stored token). Configure it on npmjs.com:
 #   package > Settings > Trusted publishing > GitHub Actions, repository harden-vps, workflow release.yml.
 # A package that does not exist yet cannot have a trusted publisher, so the very first publish uses the
-# NPM_TOKEN repository secret if present. Delete that secret once trusted publishing is configured.
+# NPM_TOKEN (or HARDEN_VPS_FIRST_PUBLISH) repository secret if present. Delete it once trusted publishing is configured.
 on:
   push:
     tags: ["v*"]
@@ -26,4 +26,4 @@ jobs:
       - name: Publish
         run: npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.HARDEN_VPS_FIRST_PUBLISH }}
