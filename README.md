@@ -52,6 +52,7 @@ Dev box or container (non-root): `npx harden-vps workstation` sets package-manag
 | `secscan` | `secscan`, `secscan-api`, timer | Weekly malware, CVE and exposure sweep. |
 | `trivy` | verified pinned `.deb` | Scanner from a supply chain you can verify. |
 | `osv` | pinned `osv-scanner`, daily timer | Catches malicious dependencies that already landed. |
+| `secstatus` | `sec-status-api`, `/etc/sec-status/units.json` | Read-only SSH status API for the units above, see [`docs/secstatus.md`](docs/secstatus.md). |
 | `canary` | `/root/.aws/credentials` profile `backup-admin` | Tripwire for credential theft. |
 
 ## Threat model

@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 export REPO
-ALL_MODULES="ssh fail2ban unattended sysctl tailscale trivy falco alerts secscan osv canary firewall"
+ALL_MODULES="ssh fail2ban unattended sysctl tailscale trivy falco alerts secscan osv canary firewall secstatus"
 DRY_RUN=0 ROOT="" CONFIG="" FLAG_MODULES="" AUTO_CONFIRM=0 CHANGED=0
 
 usage() {

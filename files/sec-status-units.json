@@ -1,0 +1,41 @@
+{
+  "checks": {},
+  "units": [
+    {
+      "id": "secscan",
+      "name": "Security scan (ClamAV, Falco, Trivy, nmap)",
+      "link": "/security",
+      "schedule": "Weekly",
+      "periodSec": 604800,
+      "timer": "secscan.timer",
+      "service": "secscan.service"
+    },
+    {
+      "id": "osv",
+      "name": "OSV malware check",
+      "link": "/security",
+      "schedule": "Daily",
+      "periodSec": 86400,
+      "timer": "osv-malware-check.timer",
+      "service": "osv-malware-check.service"
+    },
+    {
+      "id": "falco-alert",
+      "name": "Falco alert forwarder",
+      "link": "/security",
+      "schedule": "Continuous, queue flushed every 5 min",
+      "periodSec": 300,
+      "continuous": true,
+      "timer": "falco-alert-flush.timer",
+      "service": "falco-alert-flush.service",
+      "alsoActive": [
+        "falco-alert.service",
+        "falco-modern-bpf.service"
+      ],
+      "file": {
+        "path": "/var/lib/falco-alert/queue",
+        "maxAgeSec": 1800
+      }
+    }
+  ]
+}
