@@ -64,6 +64,39 @@ summ() { jq -c --arg n "$1" --arg t "$2" '
   [.Results[]?.Vulnerabilities[]?] as $v |
   {name:$n, type:$t, counts:(reduce ("CRITICAL","HIGH","MEDIUM","LOW") as $s ({}; .[$s]=([$v[]|select(.Severity==$s)]|length))),
    vulns:([$v[]|select(.Severity=="CRITICAL" or .Severity=="HIGH")|{id:.VulnerabilityID,pkg:.PkgName,installed:.InstalledVersion,fixed:(.FixedVersion//null),severity:.Severity,title:(.Title//"")}]|unique_by(.id+.pkg)|sort_by(.severity)|.[:50])}' "$3"; }
+# Workspace clones owned by someone else are reported as a separate "third-party repos" target.
+# /etc/secscan/owners lists GitHub owners (one per line); a dir whose git remote is not under one of
+# them is third-party. No owners file, no git remote, or no .git means own. Linked worktrees use the main repo's config. Reads config files only.
+OWNERS=(); [ -f /etc/secscan/owners ] && mapfile -t OWNERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' /etc/secscan/owners | grep .)
+is_third_party() {
+  local o u urls g cfg root=${2:-}; [ ${#OWNERS[@]} -gt 0 ] || return 1
+  cfg=$1/.git/config
+  if [ -f "$1/.git" ]; then  # linked worktree: follow gitdir to the main repo's config
+    g=$(sed -n 's/^gitdir: //p' "$1/.git" | head -1)
+    # gitdir paths come from the workspace container; re-root them under the scanned dir on the host
+    [ -d "$g" ] || { [ -n "$root" ] && g=$root/${g#*/"$(basename "$root")"/}; }
+    [ -f "$g/commondir" ] && g=$(readlink -f "$g/$(head -1 "$g/commondir")")
+    cfg=$g/config
+  fi
+  [ -f "$cfg" ] || return 1
+  urls=$(awk '$1=="url"{print $3}' "$cfg" 2>/dev/null); [ -n "$urls" ] || return 1
+  while read -r u; do for o in "${OWNERS[@]}"; do
+    [[ "${u,,}" == *"github.com/${o,,}/"* || "${u,,}" == *"github.com:${o,,}/"* ]] && return 1
+  done; done <<< "$urls"
+  return 0
+}
+# repo_scan <dir> <own-name> <third-party-name>: split <dir>/* by owner and scan each set with trivy.
+repo_scan() {
+  local d tp=() tpskip=() ownskip=()
+  for d in "$1"/*/; do d=${d%/}
+    if is_third_party "$d" "$1"; then tp+=("$d"); tpskip+=(--skip-dirs "$d"); else ownskip+=(--skip-dirs "$d"); fi
+  done
+  $TV fs -f json -o "$W/t.json" --skip-dirs '**/node_modules' --skip-dirs '**/.venv' "${tpskip[@]}" "$1" 2> >(tee -a "$W/trivy.err" | logpipe trivy) \
+    && summ "$2" repo "$W/t.json" >> "$W/tt.jsonl" || terr+="repos failed; "
+  [ ${#tp[@]} -gt 0 ] || return 0
+  $TV fs -f json -o "$W/t.json" --skip-dirs '**/node_modules' --skip-dirs '**/.venv' "${ownskip[@]}" "$1" 2> >(tee -a "$W/trivy.err" | logpipe trivy) \
+    && summ "$3" repo "$W/t.json" | jq -c '.thirdParty=true' >> "$W/tt.jsonl" || terr+="third-party repos failed; "
+}
 log "trivy: updating vulnerability database"
 for img in $(command -v docker >/dev/null && docker ps -a --format '{{.Image}}' 2>/dev/null | sort -u); do
   $TV image -f json -o "$W/t.json" "$img" 2> >(tee -a "$W/trivy.err" | logpipe trivy) && summ "$img" image "$W/t.json" >> "$W/tt.jsonl" || terr+="image $img failed; "
@@ -72,11 +105,10 @@ $TV rootfs -f json -o "$W/t.json" --pkg-types os --skip-dirs /var/lib/docker --s
   && summ "host /" rootfs "$W/t.json" >> "$W/tt.jsonl" || terr+="rootfs failed; "
 for fsdir in ${TRIVY_FS_PATHS:-}; do
   [ -d "$fsdir" ] || continue
-  $TV fs -f json -o "$W/t.json" --skip-dirs '**/node_modules' --skip-dirs '**/.venv' "$fsdir" 2> >(tee -a "$W/trivy.err" | logpipe trivy) \
-    && summ "$fsdir" repo "$W/t.json" >> "$W/tt.jsonl" || terr+="$fsdir failed; "
+  repo_scan "$fsdir" "$fsdir" "$fsdir (third-party)"
 done
 jq -s --arg v "$(trivy --version | awk 'NR==1{print $2}')" --argjson d "$(dur)" --arg e "$terr" '
-  {status:(if $e!="" and length==0 then "error" elif any(.[];.counts.CRITICAL+.counts.HIGH>0) then "findings" else "clean" end),
+  {status:(if $e!="" and length==0 then "error" elif any(.[]|select(.thirdParty|not);.counts.CRITICAL+.counts.HIGH>0) then "findings" else "clean" end),
    version:$v, durationSec:$d, targets:., error:(if $e=="" then null else $e end)}' "$W/tt.jsonl" > "$W/trivy.json"
 
 # nmap
