@@ -66,11 +66,20 @@ summ() { jq -c --arg n "$1" --arg t "$2" '
    vulns:([$v[]|select(.Severity=="CRITICAL" or .Severity=="HIGH")|{id:.VulnerabilityID,pkg:.PkgName,installed:.InstalledVersion,fixed:(.FixedVersion//null),severity:.Severity,title:(.Title//"")}]|unique_by(.id+.pkg)|sort_by(.severity)|.[:50])}' "$3"; }
 # Workspace clones owned by someone else are reported as a separate "third-party repos" target.
 # /etc/secscan/owners lists GitHub owners (one per line); a dir whose git remote is not under one of
-# them is third-party. No owners file, no git remote, or no .git means own. Reads .git/config only.
+# them is third-party. No owners file, no git remote, or no .git means own. Linked worktrees use the main repo's config. Reads config files only.
 OWNERS=(); [ -f /etc/secscan/owners ] && mapfile -t OWNERS < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' /etc/secscan/owners | grep .)
 is_third_party() {
-  local o u urls; [ ${#OWNERS[@]} -gt 0 ] && [ -f "$1/.git/config" ] || return 1
-  urls=$(awk '$1=="url"{print $3}' "$1/.git/config" 2>/dev/null); [ -n "$urls" ] || return 1
+  local o u urls g cfg root=${2:-}; [ ${#OWNERS[@]} -gt 0 ] || return 1
+  cfg=$1/.git/config
+  if [ -f "$1/.git" ]; then  # linked worktree: follow gitdir to the main repo's config
+    g=$(sed -n 's/^gitdir: //p' "$1/.git" | head -1)
+    # gitdir paths come from the workspace container; re-root them under the scanned dir on the host
+    [ -d "$g" ] || { [ -n "$root" ] && g=$root/${g#*/"$(basename "$root")"/}; }
+    [ -f "$g/commondir" ] && g=$(readlink -f "$g/$(head -1 "$g/commondir")")
+    cfg=$g/config
+  fi
+  [ -f "$cfg" ] || return 1
+  urls=$(awk '$1=="url"{print $3}' "$cfg" 2>/dev/null); [ -n "$urls" ] || return 1
   while read -r u; do for o in "${OWNERS[@]}"; do
     [[ "${u,,}" == *"github.com/${o,,}/"* || "${u,,}" == *"github.com:${o,,}/"* ]] && return 1
   done; done <<< "$urls"
@@ -80,7 +89,7 @@ is_third_party() {
 repo_scan() {
   local d tp=() tpskip=() ownskip=()
   for d in "$1"/*/; do d=${d%/}
-    if is_third_party "$d"; then tp+=("$d"); tpskip+=(--skip-dirs "$d"); else ownskip+=(--skip-dirs "$d"); fi
+    if is_third_party "$d" "$1"; then tp+=("$d"); tpskip+=(--skip-dirs "$d"); else ownskip+=(--skip-dirs "$d"); fi
   done
   $TV fs -f json -o "$W/t.json" --skip-dirs '**/node_modules' --skip-dirs '**/.venv' "${tpskip[@]}" "$1" 2> >(tee -a "$W/trivy.err" | logpipe trivy) \
     && summ "$2" repo "$W/t.json" >> "$W/tt.jsonl" || terr+="repos failed; "
