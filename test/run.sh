@@ -131,9 +131,11 @@ if command -v node >/dev/null 2>&1; then
 else echo "skip launcher/npm tests (node missing)"; fi
 
 # 9. sanitization of this repo (working tree)
+# The repository owner in package.json URLs is public anyway (npm provenance needs it); everything else must be clean.
 # Personal-data patterns, rot13-encoded so this file does not trip its own check.
 bad=$(echo 'arseb|nzvg|fhaal|ebl|qhpxqaf|206[.]51|100[.]83|100[.]112|100[.]103|260[2]:|ffqabqrf|ntragznvy\.gb|rac3f0|pbqre-Nzvg|fxljnyxre|barcyhf|tznvy' | tr 'A-Za-z' 'N-ZA-Mn-za-m')
-if hits=$(grep -rniE "$bad" --exclude-dir=.git --exclude-dir=node_modules .); [ -n "$hits" ]; then
+if hits=$(grep -rniE "$bad" --exclude-dir=.git --exclude-dir=node_modules . \
+  | grep -vE '^\./package\.json:.*"(url|homepage)": "(git\+)?https://github\.com/[^/]+/harden-vps' || true); [ -n "$hits" ]; then
   fail "sanitization grep: $(wc -l <<<"$hits") hit(s)"; echo "$hits" | head
 else ok "sanitization grep clean"; fi
 
