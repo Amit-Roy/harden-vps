@@ -98,7 +98,7 @@ repo_scan() {
     && summ "$3" repo "$W/t.json" | jq -c '.thirdParty=true' >> "$W/tt.jsonl" || terr+="third-party repos failed; "
 }
 log "trivy: updating vulnerability database"
-for img in $(command -v docker >/dev/null && docker ps -a --format '{{.Image}}' 2>/dev/null | sort -u); do
+for img in $(command -v docker >/dev/null && docker ps --format '{{.Image}}' 2>/dev/null | sort -u); do
   $TV image -f json -o "$W/t.json" "$img" 2> >(tee -a "$W/trivy.err" | logpipe trivy) && summ "$img" image "$W/t.json" >> "$W/tt.jsonl" || terr+="image $img failed; "
 done
 $TV rootfs -f json -o "$W/t.json" --pkg-types os --skip-dirs /var/lib/docker --skip-dirs /proc --skip-dirs /sys / 2> >(tee -a "$W/trivy.err" | logpipe trivy) \

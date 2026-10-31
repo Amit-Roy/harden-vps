@@ -31,7 +31,7 @@ Dev box or container (non-root): `npx harden-vps workstation` sets package-manag
 - **Tailscale** (optional): official apt repo, SSH over the tailnet while the public port stays closed.
 - **Falco**: eBPF runtime detection, JSON output, webserver off, noise exceptions.
 - **Alerts**: Falco digest every 5 minutes through `agentmail`, `ntfy`, `webhook` or `smtp`.
-- **secscan**: weekly ClamAV (temporary multithreaded clamd + AppArmor override), Falco summary, Trivy, nmap; JSON results and a forced-command API.
+- **secscan**: weekly ClamAV (temporary multithreaded clamd + AppArmor override), Falco summary, Trivy, nmap; JSON results and a forced-command API. Container findings cover running services; stopped migration and rollback containers remain offline artifacts.
 - **Trivy**: pinned, sha256 + cosign verified, held, compromised 0.69.4-0.69.6 refused.
 - **osv-malware-check**: daily OSV `MAL-` advisories over your lockfiles, alerts on new hits only.
 - **Canary** (optional): fake AWS keys that email you when an intruder uses them.
